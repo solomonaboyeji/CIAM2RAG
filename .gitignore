@@ -1,0 +1,4 @@
+ciam2rag_store_postgres_data
+ciam2rag_postgres_data
+env
+__pycache__

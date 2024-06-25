@@ -1,0 +1,19 @@
+services:
+  ciam2rag-store-db:
+    container_name: ciam2rag-store-db
+    image: postgres:16.2
+    environment:
+      - POSTGRES_USER=CIAM2RAG-USER
+      - POSTGRES_PASSWORD=CIAM2RAG-SECRET-PASSWORD
+      - POSTGRES_DB=CIAM2RAG-DB
+
+    networks:
+      - ciam2rag-network
+
+    ports:
+      - "5432:5432"
+
+networks:
+  ciam2rag-network:
+    external: true
+    name: ciam2rag-network

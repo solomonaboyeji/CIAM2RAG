@@ -1,0 +1,17 @@
+services:
+  ciam2rag-raw-data:
+    container_name: ciam2rag-raw-data
+    image: postgres:16.2
+
+    env_file:
+      - path: ../database.env
+        required: true
+
+    ports:
+      - "5434:5432"
+
+    volumes:
+      - ../ciam2rag_postgres_data:/var/lib/postgresql/data
+
+volumes:
+  ciam2rag_postgres_data:
