@@ -42,3 +42,14 @@ beautifulsoup4
 typer
 haystack-ai==2.2.3
 ollama-haystack==0.0.7
+
+# huggingface-hub==0.21
+
+torch
+torchvision
+torchaudio  
+transformers
+
+qdrant-client[fastembed]==1.10.1
+# qdrant-client[fastembed-gpu]
+sentence_transformers

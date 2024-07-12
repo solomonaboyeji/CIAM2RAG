@@ -1,3 +1,8 @@
+import json
+import os
+from pathlib import Path
+import pprint
+from typing import List
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -16,7 +21,7 @@ from src.schemas import (
 )
 from bs4 import BeautifulSoup
 from loguru import logger
-from src.utils import filter_review_date
+from src.utils import StorageOption, filter_review_date
 
 store_db_session = SessionLocal()
 
@@ -128,79 +133,143 @@ def insert_store_review(review: Review):
 
 
 def fetch_raw_data(
-    k: int | None = None, config_category_ref_code: CategoryConfigCode | None = None
+    k: int | None = None,
+    randomise: bool = False,
+    only_products_with_reviews: bool = True,
+    config_category_ref_code: CategoryConfigCode | None = None,
+    storage_option: StorageOption = StorageOption.DATABASE,
+    folder_name: str | None = None,
 ):
 
-    raw_db_session = RawDBSessionLocal()
-    sql = """
-        SELECT * FROM products
-    """
-    where_sql = ""
+    products_with_reviews = []
+    Path(f"./{folder_name}/images").mkdir(parents=True, exist_ok=True)
 
-    if config_category_ref_code == None:
-        categories_ref = [
+    if storage_option not in [StorageOption.DATABASE, StorageOption.JSON]:
+        raise ValueError("Invalid Storage Option: Supported are DATABASE and JSON")
+
+    if (
+        config_category_ref_code == None
+        or config_category_ref_code == CategoryConfigCode.ALL
+    ):
+        categories_refs = [
             CategoryConfigCode.FASHION_MEN.value,
             CategoryConfigCode.FASHION_WOMEN.value,
             CategoryConfigCode.BEAUTY_SKIN_CARE.value,
         ]
     else:
-        categories_ref = [config_category_ref_code]
+        categories_refs = [config_category_ref_code.value]
 
-    where_sql += f"products.config_category_ref_code in {tuple(categories_ref)}"
+    for category_ref in categories_refs:
+        logger.info(f"Fetching {category_ref}\n\n")
+        distinct_data = "products.config_category_ref_code"
+        group_by_data = "products.data_asin, products.config_category_ref_code"
+        if randomise:
+            distinct_data = "products.config_category_ref_code, RANDOM()"
 
-    if len(where_sql) > 0:
-        sql += "WHERE " + where_sql
+        raw_db_session = RawDBSessionLocal()
+        sql = f"""
+            SELECT products.* 
+            FROM products
+        """
 
-    sql += "\n ORDER BY products.config_category_ref_code"
+        if only_products_with_reviews:
+            sql += "\nJOIN reviews ON products.data_asin = reviews.product_asin"
 
-    if k is not None:
-        sql += f" \n LIMIT {k} \n"
+        where_sql = ""
 
-    result = raw_db_session.execute(text(sql))
+        where_sql += f"products.config_category_ref_code in ('{category_ref}')"
 
-    products = []
-    for row in result.all():
-        row_item = {}
+        if len(where_sql) > 0:
+            sql += "\nWHERE " + where_sql
 
-        for key, value in enumerate(row._fields):
+        sql += f"\n GROUP BY {group_by_data}"
 
-            if value != "image_data":
-                content = row[key]
-                if value == "description":
-                    soup = BeautifulSoup(row[key], features="html.parser")
-                    content = " ".join(soup.text.split("\n"))
+        sql += f"\n ORDER BY {distinct_data}"
 
-                row_item[value] = content
+        if k is not None:
+            sql += f" \n LIMIT {k} \n"
 
-        products.append(Product.model_validate(row_item, from_attributes=True))
-
-    processed_products = ProductList.model_validate({"products": products})
-
-    result = map(insert_store_product, processed_products.products)
-
-    for product in list(result):
-        sql = f"SELECT * FROM reviews WHERE product_asin = '{product.product_asin}'"
+        print(sql)
         result = raw_db_session.execute(text(sql))
-        reviews = []
+
+        products = []
         for row in result.all():
-            row_item = {"product_id": product.id, "id": uuid4()}
+            row_item = {}
 
             for key, value in enumerate(row._fields):
+
                 content = row[key]
-                if value == "review_date":
-                    content = filter_review_date(content)
+                if value != "image_data":
+                    if value == "description":
+                        soup = BeautifulSoup(row[key], features="html.parser")
+                        content = " ".join(soup.text.split("\n"))
 
-                row_item[value] = content
+                    row_item[value] = content
+                elif value == "image_data":
+                    Path(
+                        f"./{folder_name}/images/{row_item['data_asin']}.png"
+                    ).write_bytes(
+                        content  # type: ignore
+                    )
 
-            reviews.append(Review.model_validate(row_item, from_attributes=True))
+            products.append(Product.model_validate(row_item, from_attributes=True))
 
-        product_reviews = ReviewList.model_validate({"reviews": reviews})
-        logger.success(
-            f"Product: {product.id} - Reviews: {len(product_reviews.reviews)}"
-        )
-        result = list(map(insert_store_review, product_reviews.reviews))
+        processed_products = ProductList.model_validate({"products": products})
 
-    raw_db_session.close()
+        if storage_option == StorageOption.DATABASE:
+            product_models = map(insert_store_product, processed_products.products)
+        elif storage_option == StorageOption.JSON:
+            if Path(f"./{folder_name}/raw_products.json").exists():
+                os.remove(f"./{folder_name}/raw_products.json")
+
+            Path(f"./{folder_name}/raw_products.json").write_text(
+                processed_products.model_dump_json()
+            )
+            logger.success("Product raw data stored into raw_products.json")
+        else:
+            raise ValueError("Invalid Storage Option")
+
+        for product in list(processed_products.products):
+            sql = f"SELECT * FROM reviews WHERE product_asin = '{product.product_asin}'"
+            db_result = raw_db_session.execute(text(sql))
+            reviews = []
+            for row in db_result.all():
+                row_item = {"product_id": product.id, "id": uuid4()}
+
+                for key, value in enumerate(row._fields):
+                    content = row[key]
+                    if value == "review_date":
+                        content = filter_review_date(content)
+
+                    row_item[value] = content
+
+                reviews.append(Review.model_validate(row_item, from_attributes=True))
+
+            product_reviews = ReviewList.model_validate({"reviews": reviews})
+            product_json = {
+                **product.model_dump(mode="json"),
+                **product_reviews.model_dump(mode="json"),
+            }
+            products_with_reviews.append(product_json)
+
+            logger.success(
+                f"Product: {product.id} - Reviews: {len(product_reviews.reviews)}"
+            )
+            if storage_option == StorageOption.DATABASE:
+                db_reviews_result = list(
+                    map(insert_store_review, product_reviews.reviews)
+                )
+                raw_db_session.close()
+                logger.success("Product raw data stored into the store's database")
+            elif storage_option == StorageOption.JSON:
+                if Path(f"./{folder_name}//raw_products.json").exists():
+                    os.remove(f"./{folder_name}//raw_products.json")
+                Path(f"./{folder_name}//raw_products.json").write_text(
+                    json.dumps(products_with_reviews)
+                )
+                logger.success("Product raw data stored into raw_products.json")
+            else:
+                raise ValueError("Invalid Storage Option")
 
 
 # product = processed_products.products[1]

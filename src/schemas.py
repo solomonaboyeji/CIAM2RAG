@@ -76,7 +76,7 @@ class Product(BaseModel):
     id: UUID = Field(alias="data_uuid")
     name: str
     description: str
-    revised_description: Optional[str]
+    revised_description: Optional[str] = None
     product_asin: str = Field(alias="data_asin")
 
     overall_ratings: Annotated[

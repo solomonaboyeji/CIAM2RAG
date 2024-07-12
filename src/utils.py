@@ -1,5 +1,12 @@
 import re
+import enum
 from sqlalchemy.orm import DeclarativeBase
+
+
+class StorageOption(enum.StrEnum):
+    DATABASE = "DATABASE"
+    JSON = "JSON"
+    CSV = "CSV"
 
 
 class Base(DeclarativeBase):
