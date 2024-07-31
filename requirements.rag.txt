@@ -1,0 +1,14 @@
+pillow
+pydantic 
+lxml
+pillow 
+matplotlib 
+tiktoken 
+open_clip_torch 
+torch
+langchain 
+openai 
+langchain-chroma 
+langchain-experimental # (newest versions required for multi-modal)
+langchain_openai
+langchain_community
