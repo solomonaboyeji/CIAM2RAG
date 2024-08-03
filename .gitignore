@@ -6,3 +6,4 @@ __pycache__
 database.env
 .checkpoints
 env.rag
+embeddings-cache
