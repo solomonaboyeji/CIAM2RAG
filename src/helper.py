@@ -6,6 +6,8 @@ from typing import List
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+from src.product_chains.product_combined_info import ProductCombinedInformation
+from src.product_chains.schemas import RAWProduct
 from src.pipelines.description_pipeline import generate_concise_description
 from src.database import RawDBSessionLocal, SessionLocal
 from src.models.models import ProductModel, ReviewModel
@@ -18,12 +20,43 @@ from src.schemas import (
     ReviewList,
     ProductUpdate,
     ReviewUpdate,
+    TextLLM,
 )
 from bs4 import BeautifulSoup
 from loguru import logger
 from src.utils import StorageOption, filter_review_date
 
 store_db_session = SessionLocal()
+
+
+def generate_pci(
+    k: int = 10,
+    sub_category: ProductSubCategory = ProductSubCategory.FASHION_MEN,
+    llm_choice: TextLLM = TextLLM.LLAMA_3_1,
+):
+    products = (
+        store_db_session.query(ProductModel)
+        .filter(ProductModel.sub_category == sub_category)
+        .limit(k)
+    ).all()
+
+    print(len(products))
+    if llm_choice == TextLLM.GPT_4O and len(products) > 20:
+        raise ValueError("This is expensive!")
+
+    for product in products:
+        logger.info(f"Generating for product: {product.name}")
+
+        product_info = ProductCombinedInformation(
+            product=RAWProduct.model_validate(product, from_attributes=True)
+        )
+
+        print(product_info.info())
+
+        # product.revised_description = generate_concise_description(product=product)
+        # store_db_session.add(product)
+        # store_db_session.commit()
+        # store_db_session.refresh(product)
 
 
 def revise_product_descriptions(
@@ -186,7 +219,7 @@ def fetch_raw_data(
 
         sql += f"\n ORDER BY {distinct_data}"
 
-        if k is not None:
+        if k is not None and k > 0:
             sql += f" \n LIMIT {k} \n"
 
         print(sql)

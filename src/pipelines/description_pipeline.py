@@ -7,29 +7,29 @@ from haystack_integrations.components.generators.ollama import (
 
 from src.models.models import ProductModel
 
-template = """
-
-You are an expert marketing genius. Your task is to review the description of a product.
-You will remove unncessary characters in the description, while you return the updated description.
-You should not add any information from any other source, all your content should be within the provided 
-information.
-
-When you have an answer, review it to ensure it is readable by humans.
-
-
-Here is the product information:
-Product Name: {{product_name}}
-Product Data
-{{product_information}}
-
-Your revised description:
-
-"""
-
 
 def generate_concise_description(
     product: ProductModel, model_name: str = "zephyr", temperature: str = "0.9"
 ):
+
+    template = """
+
+    You are an expert marketing genius. Your task is to review the description of a product.
+    You will remove unncessary characters in the description, while you return the updated description.
+    You should not add any information from any other source, all your content should be within the provided 
+    information.
+
+    When you have an answer, review it to ensure it is readable by humans.
+
+
+    Here is the product information:
+    Product Name: {{product_name}}
+    Product Data
+    {{product_information}}
+
+    Your revised description:
+
+    """
 
     prompt_builder = PromptBuilder(template=template)
     llm = OllamaGenerator(model=model_name)

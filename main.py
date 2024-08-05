@@ -1,10 +1,27 @@
 from typing import List, Tuple
 import typer
-from src.helper import fetch_raw_data, revise_product_descriptions
-from src.schemas import CategoryConfigCode, ProductSubCategory
+from src.helper import fetch_raw_data, generate_pci, revise_product_descriptions
+from src.schemas import CategoryConfigCode, ProductSubCategory, TextLLM
 from src.utils import StorageOption
 
 app = typer.Typer()
+
+
+@app.command()
+def generate_product_combined_information(
+    k: int = typer.Option(2, help="Number of products to fetch"),
+    category: ProductSubCategory = typer.Option(
+        ProductSubCategory.FASHION_MEN, help="Sub Category"
+    ),
+    llm: TextLLM = typer.Option(TextLLM.LLAMA_3_1, help="The LLM to use."),
+):
+    """
+    Generate PCI for each product found in this category.
+    """
+
+    typer.echo(f"Fetching {k} items from category {category}")
+    generate_pci(k=k, sub_category=category, llm_choice=llm)
+    typer.echo("PCI Generated successfully!")
 
 
 @app.command()

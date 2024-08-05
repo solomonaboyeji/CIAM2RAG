@@ -68,7 +68,7 @@ down-raw-db:
 # load the raw data into the raw database
 load-raw-data:
 	docker cp ../scraped_data.sql ciam2rag-raw-data:/tmp/scraped_data.sql
-	docker exec -it ciam2rag-raw-data bash
+	docker exec -it ciam2rag-raw-data bash 
 	psql -U amzon -d CIAM2RAG-DB < /tmp/scraped_data.sql
 
 

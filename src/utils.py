@@ -44,7 +44,10 @@ def remove_control_characters(text: str):
     return text.replace("\n", "")
 
 
-def filter_helpful_vote(helpful_text: str):
+def filter_helpful_vote(helpful_text: str | None):
+    if helpful_text is None:
+        return 0
+
     if helpful_text.lower().startswith("one"):
         return 1
 
@@ -59,4 +62,6 @@ def filter_helpful_vote(helpful_text: str):
 
 
 def filter_review_rating(review_rating_text: str):
-    return review_rating_text.split(" out of 5 stars")[0]
+    if review_rating_text:
+        return review_rating_text.split(" out of 5 stars")[0]
+    return 0

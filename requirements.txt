@@ -53,3 +53,10 @@ transformers
 qdrant-client[fastembed]==1.10.1
 # qdrant-client[fastembed-gpu]
 sentence_transformers
+
+chromadb 
+langchain 
+langchain_experimental 
+langchain_openai 
+langchain_community
+# protobuf==3.20.2

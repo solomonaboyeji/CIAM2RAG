@@ -8,6 +8,17 @@ from typing_extensions import Annotated
 from src.utils import filter_helpful_vote, filter_review_location, filter_review_rating
 
 
+class TextLLM(enum.StrEnum):
+    GPT_4O = "gpt-4o"
+    LLAMA_3_1 = "llama3.1"
+    MISTRAL = "mistral"
+
+
+class VisionLLM(enum.StrEnum):
+    GPT_4O = "gpt-4o"
+    LLAVA = "llava"
+
+
 class ProductSubCategory(enum.StrEnum):
     FASHION_MEN = "Men's Fashion"
     FASHION_WOMEN = "Women's Fashion"
@@ -40,7 +51,7 @@ class Review(BaseModel):
     review_ref: str = Field(alias="review_id")
     product_id: UUID
     review_content: str
-    review_title: str
+    review_title: Optional[str] = ""
     date_written: Annotated[date, BeforeValidator(parse_date)] = Field(
         alias="review_date"
     )
