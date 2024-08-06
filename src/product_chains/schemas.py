@@ -1,5 +1,5 @@
 from uuid import UUID
-from typing import List
+from typing import List, Optional
 from datetime import date
 from pydantic import BaseModel
 
@@ -30,4 +30,4 @@ class RAWProduct(BaseModel):
     sub_category: str
     product_page_url: str
     image_url: str
-    reviews: List[RawReview]
+    reviews: Optional[List[RawReview]] = []

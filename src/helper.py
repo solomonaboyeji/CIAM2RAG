@@ -6,7 +6,10 @@ from typing import List
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
-from src.product_chains.product_combined_info import ProductCombinedInformation
+from src.product_chains.product_combined_info import (
+    ProductCombinedInformation,
+    summarise_product_info,
+)
 from src.product_chains.schemas import RAWProduct
 from src.pipelines.description_pipeline import generate_concise_description
 from src.database import RawDBSessionLocal, SessionLocal
@@ -26,37 +29,122 @@ from bs4 import BeautifulSoup
 from loguru import logger
 from src.utils import StorageOption, filter_review_date
 
+
+from langchain_openai import ChatOpenAI
+
 store_db_session = SessionLocal()
+
+MAXIMUM_GPT_ITERATIONS = 20
+
+
+def generate_psi(
+    pci_json_file_path_str: str,
+    psi_json_output_folder_path_str: str,
+    k: int = 10,
+    llm_choice: TextLLM = TextLLM.LLAMA_3_1,
+):
+    """Generates the product summary information for the given PCI JSON file.
+
+    Args:
+        pci_json_file_path_str (str): The file containing the product combined information
+        psi_json_output_folder_path_str (str): The folder to save the product summary information.
+        k: (int): The total number of products to generate summary for.
+        llm_choice (TextLLM, optional): The model to use to for summary generation. Defaults to TextLLM.LLAMA_3_1.
+
+    Raises:
+        FileNotFoundError: If `pci_json_file_path_str` does not exist.
+        ValueError: If any other error occurs.
+    """
+
+    pci_file_path = Path(pci_json_file_path_str)
+    if not pci_file_path.exists():
+        raise FileNotFoundError(f"{pci_json_file_path_str} does not exist.")
+
+    product_combined_infos = json.loads(pci_file_path.read_text())
+    assert isinstance(product_combined_infos, dict), "pcis must be dict"
+
+    if llm_choice == TextLLM.GPT_4O and k > MAXIMUM_GPT_ITERATIONS:
+        raise ValueError(
+            f"{MAXIMUM_GPT_ITERATIONS} iterations! This is expensive! Please change LLM from {llm_choice}"
+        )
+
+    output_file_path = Path(
+        psi_json_output_folder_path_str + f"/psi-{llm_choice.lower()}.json"
+    )
+    if output_file_path.exists():
+        psis = json.loads(output_file_path.read_text())
+        assert isinstance(psis, dict)
+    else:
+        psis = {}
+
+    for index, product_info_data in enumerate(product_combined_infos.items()):
+        # We did this to ensure we save the latest summary should in case any error
+        # occurs, we can continue from where we stopped.
+        if output_file_path.exists():
+            psis = json.loads(output_file_path.read_text())
+            assert isinstance(psis, dict)
+        else:
+            psis = {}
+
+        logger.info(f"{index + 1}/{k}\n")
+
+        product_asin, product_info_str = product_info_data
+        if product_asin not in psis:
+            psis[product_asin] = summarise_product_info(
+                product_info=product_info_str, model_name=llm_choice
+            )
+
+        Path(output_file_path).write_text(json.dumps(psis))
+
+        if (index + 1) == k:
+            break
+
+    print(output_file_path.absolute())
 
 
 def generate_pci(
+    folder_path_str: str,
     k: int = 10,
-    sub_category: ProductSubCategory = ProductSubCategory.FASHION_MEN,
-    llm_choice: TextLLM = TextLLM.LLAMA_3_1,
+    sub_category: CategoryConfigCode = CategoryConfigCode.FASHION_MEN,
 ):
-    products = (
-        store_db_session.query(ProductModel)
-        .filter(ProductModel.sub_category == sub_category)
-        .limit(k)
-    ).all()
+    """Generates the combined product information for each product in the store's database.
 
-    print(len(products))
-    if llm_choice == TextLLM.GPT_4O and len(products) > 20:
-        raise ValueError("This is expensive!")
+    Args:
+        folder_path_str (str): The directory to save the `pci.json` file into.
+        k (int, optional): The number of products to generate for. -1 means all. Defaults to 10.
+        sub_category (CategoryConfigCode, optional): The category to fetch the products from. Defaults to CategoryConfigCode.FASHION_MEN.
 
-    for product in products:
-        logger.info(f"Generating for product: {product.name}")
+    Raises:
+        ValueError: If any error occurs.
+    """
+
+    query = store_db_session.query(ProductModel).filter(
+        ProductModel.sub_category == sub_category
+    )
+    if k is not None and k > 0:
+        query = query.limit(k)
+
+    products = query.all()
+
+    output_directory_path = Path(folder_path_str)
+    output_file_path = Path(f"{output_directory_path.absolute()}/pci.json")
+    if not output_directory_path.exists():
+        os.makedirs(folder_path_str, exist_ok=True)
+
+    pcis = {}
+    if output_file_path.exists():
+        pcis = json.loads(output_file_path.read_text())
+        assert isinstance(pcis, dict), "existing PCIs must be in dict form"
+
+    for index, product in enumerate(products):
+        logger.info(f"{index + 1}/{len(products)}")
 
         product_info = ProductCombinedInformation(
             product=RAWProduct.model_validate(product, from_attributes=True)
         )
+        pcis[product.product_asin] = product_info.info_for_summary()
 
-        print(product_info.info())
-
-        # product.revised_description = generate_concise_description(product=product)
-        # store_db_session.add(product)
-        # store_db_session.commit()
-        # store_db_session.refresh(product)
+    output_file_path.write_text(json.dumps(pcis))
 
 
 def revise_product_descriptions(
@@ -250,7 +338,9 @@ def fetch_raw_data(
         processed_products = ProductList.model_validate({"products": products})
 
         if storage_option == StorageOption.DATABASE:
-            product_models = map(insert_store_product, processed_products.products)
+            product_models = list(
+                map(insert_store_product, processed_products.products)
+            )
         elif storage_option == StorageOption.JSON:
             if Path(f"./{folder_name}/raw_products.json").exists():
                 os.remove(f"./{folder_name}/raw_products.json")

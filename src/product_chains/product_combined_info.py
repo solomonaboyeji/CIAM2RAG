@@ -1,5 +1,8 @@
-from langchain_core.documents import Document
+from dotenv import load_dotenv
 
+load_dotenv()
+
+from langchain_core.documents import Document
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -34,13 +37,19 @@ class ProductCombinedInformation:
 
     def info(self):
         return (
-            f"Product ID: {str(self.product.id).strip()} \n"
             f"Product Name: {str(self.product.name).strip()} \n"
             f"Product Description: {str(self.product.description).strip()} \n"
+            f"Product ID: {str(self.product.id).strip()} \n"
             f"Product Asin: {self.product.product_asin} \n"
             f"Overall Ratings {self.product.overall_ratings} \n"
             f"Total Customers that rated: {self.product.total_customers_that_rated} \n"
-            f"Pric: {self.product.currency}{self.product.price} \n"
+            f"Price: {self.product.currency}{self.product.price} \n"
+        )
+
+    def info_for_summary(self):
+        return (
+            f"Product Name: {str(self.product.name).strip()} \n"
+            f"Product Description: {str(self.product.description).strip()} \n"
         )
 
     def image_path(self):
@@ -51,24 +60,26 @@ class ProductCombinedInformation:
 def summarise_product_info(product_info: str, model_name: str):
 
     if model_name.lower() not in [
-        TextLLM.GPT_4O,
-        TextLLM.LLAMA_3_1,
-        TextLLM.MISTRAL,
-        VisionLLM.GPT_4O,
-        VisionLLM.LLAVA,
+        TextLLM.GPT_4O.lower(),
+        TextLLM.LLAMA_3_1.lower(),
+        TextLLM.LLAMA_3_1_INSTRUCT.lower(),
+        TextLLM.MISTRAL.lower(),
+        VisionLLM.GPT_4O.lower(),
+        VisionLLM.LLAVA.lower(),
+        VisionLLM.LLAVA_VICUNA_Q4_0.lower(),
     ]:
         raise ValueError(
             f"Please provide a supported model. {model_name} not supported"
         )
 
     prompt_template = (
+        "Your response should be plain string not markdown or json and start with the product name."
         "You are an assistant tasked with summarizing "
         "text for retrieval. These summaries will be embedded and used "
         "to retrieve the raw text. Give a concise summary of the product. "
-        "Ensure you include important details "
-        "that is well optimized for retrieval.\n"
+        "Ensure you include important details such as what is made of and it can be used for, these summary should be"
+        "well optimized for retrieval.\n"
         f"Product: {product_info}\n"
-        "Your response should start with the product name."
     )
 
     prompt = ChatPromptTemplate.from_template(prompt_template)
@@ -76,7 +87,7 @@ def summarise_product_info(product_info: str, model_name: str):
     if model_name.lower() in [TextLLM.GPT_4O, VisionLLM.GPT_4O]:
         model = ChatOpenAI(model=model_name, max_tokens=1024, temperature=0)
     else:
-        model = ChatOllama(model=model_name, temperature=0)
+        model = ChatOllama(model=model_name, temperature=0, num_ctx=4000)
 
     # { "product_info": RunnablePassthrough() } is same as lambda x: x
     # basically do not modify what the user entered, pass into the key product_info

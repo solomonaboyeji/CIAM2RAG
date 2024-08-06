@@ -11,12 +11,14 @@ from src.utils import filter_helpful_vote, filter_review_location, filter_review
 class TextLLM(enum.StrEnum):
     GPT_4O = "gpt-4o"
     LLAMA_3_1 = "llama3.1"
+    LLAMA_3_1_INSTRUCT = "llama3.1:8b-instruct-q5_K_M"
     MISTRAL = "mistral"
 
 
 class VisionLLM(enum.StrEnum):
     GPT_4O = "gpt-4o"
     LLAVA = "llava"
+    LLAVA_VICUNA_Q4_0 = "llava:13b-v1.6-vicuna-q4_0".lower()
 
 
 class ProductSubCategory(enum.StrEnum):
