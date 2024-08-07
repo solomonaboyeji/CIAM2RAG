@@ -38,5 +38,7 @@ Generate Product Summary Information
 
  python -m main generate-product-summary-information  --pci-input-path V1_DATA/pci.json --psi-output-folder-path V1_DATA --k 20 --llm llama3.1:8b-instruct-q5_K_M
 
+ This started from 2024-08-06 13:54:11.247 and ended 2024-08-06 15:39:36.439 as shown in `./research_data/generating-psi`
+
 
 ```
