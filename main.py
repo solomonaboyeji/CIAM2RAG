@@ -1,3 +1,4 @@
+from typing import final
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -6,13 +7,43 @@ import typer
 from src.helper import (
     fetch_raw_data,
     generate_pci,
+    generate_pid,
     generate_psi,
     revise_product_descriptions,
 )
-from src.schemas import CategoryConfigCode, ProductSubCategory, TextLLM
+from langchain.callbacks.tracers.langchain import wait_for_all_tracers
+from src.schemas import CategoryConfigCode, ProductSubCategory, TextLLM, VisionLLM
 from src.utils import StorageOption
 
 app = typer.Typer()
+
+
+@app.command()
+def generate_product_image_description(
+    k: int = typer.Option(2, help="Number of products to fetch"),
+    llm: VisionLLM = typer.Option(VisionLLM.LLAVA_VICUNA_Q4_0, help="The LLM to use."),
+    images_directory: str = typer.Option(help="Directory to fetch images from."),
+    pci_input_path: str = typer.Option(help="File to read the pci from."),
+    pid_output_folder_path: str = typer.Option(
+        help="Folder to store the pid.json file"
+    ),
+):
+    """
+    Generate PID for each product found the `pid.json` file.
+    """
+
+    typer.echo(f"Generating PID with {llm}.")
+    try:
+        generate_pid(
+            k=k,
+            pci_json_file_path_str=pci_input_path,
+            pid_json_output_folder_path_str=pid_output_folder_path,
+            llm_choice=llm,
+            images_directory=images_directory,
+        )
+        typer.echo(f"PID Generated successfully with {llm}")
+    finally:
+        wait_for_all_tracers()
 
 
 @app.command()
@@ -28,14 +59,17 @@ def generate_product_summary_information(
     Generate PSI for each product found the `pci.json` file.
     """
 
-    typer.echo(f"Generating PSI.")
-    generate_psi(
-        k=k,
-        pci_json_file_path_str=pci_input_path,
-        psi_json_output_folder_path_str=psi_output_folder_path,
-        llm_choice=llm,
-    )
-    typer.echo("PSI Generated successfully!")
+    try:
+        typer.echo(f"Generating PSI with {llm}.")
+        generate_psi(
+            k=k,
+            pci_json_file_path_str=pci_input_path,
+            psi_json_output_folder_path_str=psi_output_folder_path,
+            llm_choice=llm,
+        )
+        typer.echo(f"PSI Generated successfully with {llm}!")
+    finally:
+        wait_for_all_tracers()
 
 
 @app.command()
@@ -50,9 +84,12 @@ def generate_product_combined_information(
     Generate PCI for each product found in this category.
     """
 
-    typer.echo(f"Fetching {k} items from category {category}")
-    generate_pci(k=k, sub_category=category, folder_path_str=folder_path)
-    typer.echo("PCI Generated successfully!")
+    try:
+        typer.echo(f"Fetching {k} items from category {category}")
+        generate_pci(k=k, sub_category=category, folder_path_str=folder_path)
+        typer.echo("PCI Generated successfully!")
+    finally:
+        wait_for_all_tracers()
 
 
 @app.command()

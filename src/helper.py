@@ -8,6 +8,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import text
 from src.product_chains.product_combined_info import (
     ProductCombinedInformation,
+    describe_image,
+    encode_image,
     summarise_product_info,
 )
 from src.product_chains.schemas import RAWProduct
@@ -24,6 +26,7 @@ from src.schemas import (
     ProductUpdate,
     ReviewUpdate,
     TextLLM,
+    VisionLLM,
 )
 from bs4 import BeautifulSoup
 from loguru import logger
@@ -35,6 +38,81 @@ from langchain_openai import ChatOpenAI
 store_db_session = SessionLocal()
 
 MAXIMUM_GPT_ITERATIONS = 20
+
+
+def generate_pid(
+    pci_json_file_path_str: str,
+    images_directory: str,
+    pid_json_output_folder_path_str: str,
+    k: int = 10,
+    llm_choice: VisionLLM = VisionLLM.LLAVA_VICUNA_Q4_0,
+):
+    """Generates the product image description for the given PCI JSON file.
+
+    Args:
+        pci_json_file_path_str (str): The file containing the product combined information
+        pid_json_output_folder_path_str (str): The folder to save the product summary information.
+        k: (int): The total number of products to generate summary for.
+        llm_choice (TextLLM, optional): The model to use to for summary generation. Defaults to TextLLM.LLAMA_3_1.
+
+    Raises:
+        FileNotFoundError: If `pci_json_file_path_str` does not exist.
+        ValueError: If any other error occurs.
+    """
+
+    pci_file_path = Path(pci_json_file_path_str)
+    if not pci_file_path.exists():
+        raise FileNotFoundError(f"{pci_json_file_path_str} does not exist.")
+
+    product_combined_infos = json.loads(pci_file_path.read_text())
+    assert isinstance(product_combined_infos, dict), "pcis must be dict"
+
+    if llm_choice == TextLLM.GPT_4O and k > MAXIMUM_GPT_ITERATIONS:
+        raise ValueError(
+            f"{MAXIMUM_GPT_ITERATIONS} iterations! This is expensive! Please change LLM from {llm_choice}"
+        )
+
+    output_file_path = Path(
+        pid_json_output_folder_path_str + f"/psi-{llm_choice.lower()}.json"
+    )
+    if output_file_path.exists():
+        pids = json.loads(output_file_path.read_text())
+        assert isinstance(pids, dict)
+    else:
+        pids = {}
+
+    if k <= 0:
+        k = len(product_combined_infos)
+
+    for index, product_info_data in enumerate(product_combined_infos.items()):
+        # We did this to ensure we save the latest summary should in case any error
+        # occurs, we can continue from where we stopped.
+        if output_file_path.exists():
+            pids = json.loads(output_file_path.read_text())
+            assert isinstance(pids, dict)
+        else:
+            pids = {}
+
+        logger.info(f"{index + 1}/{k}\n")
+
+        product_asin, product_info_str = product_info_data
+        if product_asin not in pids:
+            image_path = Path(f"{images_directory}/{product_asin}.png")
+            if image_path.exists():
+                pids[product_asin] = describe_image(
+                    img_base64=encode_image(str(image_path.absolute())),
+                    model_name=llm_choice,
+                )
+            else:
+                logger.error(f"Image description not available: {product_asin}")
+                pids[product_asin] = "Image description not available"
+
+        Path(output_file_path).write_text(json.dumps(pids))
+
+        if (index + 1) == k:
+            break
+
+    print(output_file_path.absolute())
 
 
 def generate_psi(
@@ -76,6 +154,9 @@ def generate_psi(
         assert isinstance(psis, dict)
     else:
         psis = {}
+
+    if k <= 0:
+        k = len(product_combined_infos)
 
     for index, product_info_data in enumerate(product_combined_infos.items()):
         # We did this to ensure we save the latest summary should in case any error

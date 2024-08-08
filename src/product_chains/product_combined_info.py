@@ -5,11 +5,17 @@ load_dotenv()
 from langchain_core.documents import Document
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.chat_models import ChatOllama
-from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage
+from langchain_community.chat_models import ChatOllama
+import base64
 
 
 from src.schemas import TextLLM, VisionLLM
@@ -96,3 +102,70 @@ def summarise_product_info(product_info: str, model_name: str):
     )
     summary = summarise_chain.invoke(product_info)
     return summary
+
+
+def encode_image(image_path: str):
+    """Returns the base64 string for the image"""
+
+    with open(image_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode("utf-8")
+
+
+def describe_image(img_base64, model_name: str, image_format: str = "png"):
+    """
+    Describes the image provided. The prompt is used to guide the model on what
+    to do with the description and what it should do.
+
+    Raises:
+        ValueError: If the wrong model name is provided.
+        Exception: If any error occur
+
+    Returns:
+        str: The description generated for the image
+    """
+
+    prompt = f"""
+    Describe and summarise the characteristics of the product you are looking at. Start your response with: `The image is a product ... `. 
+    In addition, give a short summary of what the product can be used for. Return back plain text no markdown.
+    """
+
+    if model_name not in [
+        VisionLLM.GPT_4O,
+        VisionLLM.LLAVA_VICUNA_Q4_0,
+        VisionLLM.LLAVA,
+    ]:
+        raise ValueError(f"Please provide either {' '.join(VisionLLM)}")
+
+    image_url = f"data:image/{image_format};base64,{img_base64}"
+
+    if model_name.lower() == VisionLLM.GPT_4O.lower():
+        chat = ChatOpenAI(model=model_name, max_tokens=1024, temperature=0)
+        msg = chat.invoke(
+            [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ]
+                )
+            ]
+        )
+    elif model_name.lower() in [
+        VisionLLM.LLAVA.lower(),
+        VisionLLM.LLAVA_VICUNA_Q4_0.lower(),
+    ]:
+        chat = ChatOllama(model=model_name, num_ctx=1024)
+        msg = chat.invoke(
+            [
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ]
+                )
+            ]
+        )
+    else:
+        raise Exception(f"Unsupported model: {model_name}.")
+
+    return msg.content
