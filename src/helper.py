@@ -73,7 +73,7 @@ def generate_pid(
         )
 
     output_file_path = Path(
-        pid_json_output_folder_path_str + f"/psi-{llm_choice.lower()}.json"
+        pid_json_output_folder_path_str + f"/pid-{llm_choice.lower()}.json"
     )
     if output_file_path.exists():
         pids = json.loads(output_file_path.read_text())
