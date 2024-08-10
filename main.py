@@ -3,19 +3,60 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from numpy import vectorize
 import typer
 from src.helper import (
     fetch_raw_data,
+    generate_embeddings,
     generate_pci,
     generate_pid,
     generate_psi,
     revise_product_descriptions,
 )
 from langchain.callbacks.tracers.langchain import wait_for_all_tracers
-from src.schemas import CategoryConfigCode, ProductSubCategory, TextLLM, VisionLLM
+from src.schemas import (
+    CategoryConfigCode,
+    EmbeddingModel,
+    ProductSubCategory,
+    TextLLM,
+    VisionLLM,
+)
 from src.utils import StorageOption
 
 app = typer.Typer()
+
+
+@app.command()
+def generate_multivector_data(
+    pid_input_path: str = typer.Option(help="pid.json file"),
+    psi_input_path: str = typer.Option(help="psi.json file"),
+    raw_data_input_path: str = typer.Option(help="File to the JSON of the raw data."),
+    embedding_model: EmbeddingModel = typer.Option(
+        EmbeddingModel.NOMIC, help="The embedding model to use."
+    ),
+    document_store_input_path: str = typer.Option(
+        help="The file to store the document's store data"
+    ),
+    embedding_cache_input_path: str = typer.Option(
+        help="The file to store cache the embeddings of the texts"
+    ),
+):
+    """
+    Generate PID for each product found the `pid.json` file.
+    """
+
+    typer.echo(f"Generating multi vector data with {embedding_model}.")
+    try:
+        generate_embeddings(
+            pid_file_path_str=pid_input_path,
+            psi_file_path_str=psi_input_path,
+            raw_data_file_path_str=raw_data_input_path,
+            document_store_cache_folder=document_store_input_path,
+            embedding_cache_folder=embedding_cache_input_path,
+        )
+        typer.echo(f"PID Generated successfully with {embedding_model}")
+    finally:
+        wait_for_all_tracers()
 
 
 @app.command()

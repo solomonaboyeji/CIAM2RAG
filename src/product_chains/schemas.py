@@ -5,11 +5,11 @@ from pydantic import BaseModel
 
 
 class RawReview(BaseModel):
-    id: UUID
+    id: str
     review_ref: str
-    product_id: UUID
+    product_id: str
     review_content: str
-    review_title: str
+    review_title: Optional[str]
     date_written: date
     product_asin: str
     helpful_count: int
@@ -18,7 +18,7 @@ class RawReview(BaseModel):
 
 
 class RAWProduct(BaseModel):
-    id: UUID
+    id: str
     name: str
     description: str
     product_asin: str

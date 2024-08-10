@@ -2,7 +2,8 @@ import json
 import os
 from pathlib import Path
 import pprint
-from typing import List
+import time
+from typing import List, Optional, Sequence, Tuple
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -12,6 +13,19 @@ from src.product_chains.product_combined_info import (
     encode_image,
     summarise_product_info,
 )
+
+# Vector Store for Document Embeddings
+from langchain_chroma import Chroma
+from langchain_experimental.open_clip import OpenCLIPEmbeddings
+from langchain_openai import OpenAIEmbeddings
+
+from langchain_community.embeddings.ollama import OllamaEmbeddings
+from langchain.embeddings import CacheBackedEmbeddings
+from langchain.storage import LocalFileStore
+from langchain_core.documents import Document
+
+from chromadb.errors import InvalidDimensionException
+
 from src.product_chains.schemas import RAWProduct
 from src.pipelines.description_pipeline import generate_concise_description
 from src.database import RawDBSessionLocal, SessionLocal
@@ -31,13 +45,219 @@ from src.schemas import (
 from bs4 import BeautifulSoup
 from loguru import logger
 from src.utils import StorageOption, filter_review_date
-
+from langchain_core.vectorstores import VectorStore
 
 from langchain_openai import ChatOpenAI
 
 store_db_session = SessionLocal()
 
 MAXIMUM_GPT_ITERATIONS = 20
+
+
+class CIAMDocumentFileStore(LocalFileStore):
+
+    def mset_docs(self, key_value_pairs: Sequence[Tuple[str, Document]]) -> None:
+        """Set the values for the given keys.
+
+        Args:
+            key_value_pairs: A sequence of key-value pairs.
+
+        Returns:
+            None
+        """
+        for key, value in key_value_pairs:
+            full_path = self._get_full_path(key)
+            self._mkdir_for_store(full_path.parent)
+            content = {
+                "metadata": value.metadata,
+                "content": value.page_content,
+                "id": value.id,
+            }
+            full_path.write_text(json.dumps(content))
+            if self.chmod_file is not None:
+                os.chmod(full_path, self.chmod_file)
+
+    def mget_docs(self, keys: Sequence[str]) -> List[Optional[Document]]:
+        """Get the values associated with the given keys.
+
+        Args:
+            keys: A sequence of keys.
+
+        Returns:
+            A sequence of optional values associated with the keys.
+            If a key is not found, the corresponding value will be None.
+        """
+        values: List[Optional[Document]] = []
+        for key in keys:
+            full_path = self._get_full_path(key)
+            if full_path.exists():
+                value = full_path.read_text()
+                content = json.loads(value)
+
+                values.append(
+                    Document(
+                        page_content=content["page_content"],
+                        id=content["id"],
+                        metadata=content["metadata"],
+                    )
+                )
+                if self.update_atime:
+                    # update access time only; preserve modified time
+                    os.utime(full_path, (time.time(), os.stat(full_path).st_mtime))
+            else:
+                values.append(Document(page_content="Empty Document", id=None))
+
+        return values
+
+
+# Helper function to add documents into the vector and the doument store
+def add_documents_no_split(
+    id_key: str,
+    summary_to_embeds: List[str],
+    combined_product_infos: List[ProductCombinedInformation],
+    docstore: CIAMDocumentFileStore,
+    vectorstore: VectorStore,
+):
+    product_ids = [
+        str(product_info_obj.product.id) for product_info_obj in combined_product_infos
+    ]
+    data = list(zip(product_ids, summary_to_embeds, combined_product_infos))
+
+    docs = []
+    parent_docs_contents = [
+        Document(
+            page_content=product_info.info(),
+            metadata={
+                id_key: product_info.product.id,
+                "id": product_info.product.id,
+                "name": product_info.product.name,
+                "product_asin": product_info.product.product_asin,
+            },
+        )
+        for product_info in combined_product_infos
+    ]
+
+    for single_item in data:
+        product_id, content_to_embed, product_info = single_item
+        docs.append(
+            Document(
+                page_content=content_to_embed,
+                metadata={
+                    id_key: product_id,
+                    "id": product_id,
+                    "name": product_info.product.name,
+                    "product_asin": product_info.product.product_asin,
+                },
+            )
+        )
+
+    assert len(docs) == len(parent_docs_contents)
+
+    vectorstore.add_documents(docs, ids=product_ids)
+    docstore.mset_docs(list(zip(product_ids, parent_docs_contents)))
+
+
+# if product_combined_info_summaries:
+#     add_documents_no_split(
+#         retriever=retriever,
+#         summary_to_embeds=product_combined_info_summaries,
+#         combined_product_infos=product_combined_infos
+#     )
+
+# if product_image_descriptions:
+#     add_documents_no_split(
+#         retriever=retriever,
+#         summary_to_embeds=product_image_descriptions,
+#         combined_product_infos=product_combined_infos
+#     )
+
+
+def generate_embeddings(
+    raw_data_file_path_str: str,
+    psi_file_path_str: str,
+    pid_file_path_str: str,
+    embedding_cache_folder: str,
+    document_store_cache_folder: str,
+):
+    raw_data_file_path = Path(raw_data_file_path_str)
+    psi_file_path = Path(psi_file_path_str)
+    pid_file_path = Path(pid_file_path_str)
+
+    assert raw_data_file_path.exists()
+    assert pid_file_path.exists()
+    assert psi_file_path.exists()
+
+    product_summaries = json.loads(psi_file_path.read_text())
+    product_image_descriptions = json.loads(pid_file_path.read_text())
+    raw_products = json.loads(raw_data_file_path.read_bytes())
+
+    products_combined_infos = {}
+    for rp in raw_products:
+        if rp["product_asin"] in product_summaries:
+            products_combined_infos[rp["product_asin"]] = ProductCombinedInformation(
+                product=RAWProduct.model_validate(rp)
+            )
+
+    # Everything must be in equal
+    # TODO: Check that same item is in the exact position in all dict
+    assert (
+        len(product_image_descriptions)
+        == len(product_summaries)
+        == len(products_combined_infos)
+    )
+
+    product_image_descriptions = sorted(
+        product_image_descriptions.items(), key=lambda x: x[0]
+    )
+    product_summaries = sorted(product_summaries.items(), key=lambda x: x[0])
+    products_combined_infos = sorted(
+        products_combined_infos.items(), key=lambda x: x[0]
+    )
+
+    text_embedding_model_name = "nomic-embed-text"
+    underlying_embedding = OpenAIEmbeddings()
+
+    # for nomic-embed, embed_instruction is `search_document` to embed documents for RAG and `search_query` to embed the question
+    underlying_embedding = OllamaEmbeddings(
+        model=text_embedding_model_name,
+        embed_instruction="search_document",
+        query_instruction="search_query",
+    )
+
+    embedding_store = LocalFileStore(embedding_cache_folder)
+    cached_embedder = CacheBackedEmbeddings.from_bytes_store(
+        underlying_embeddings=underlying_embedding,
+        document_embedding_cache=embedding_store,
+        namespace=underlying_embedding.model,
+    )
+
+    collection_name = f"fashion_store_mrag_v_{underlying_embedding.model}"
+    vectorstore = Chroma(
+        collection_name=collection_name,
+        embedding_function=cached_embedder,
+        # https://docs.trychroma.com/guides#changing-the-distance-function
+        # Cosine, 1 means most similar, 0 means orthogonal, -1 means opposite
+        collection_metadata={"hnsw:space": "cosine"},  # l2 is the default
+        # embedding_function=OpenCLIPEmbeddings(model=None, preprocess=None, tokenizer=None, model_name=model_name, checkpoint=checkpoint)
+    )
+
+    # Setup the document store
+    document_store = CIAMDocumentFileStore(document_store_cache_folder)
+    add_documents_no_split(
+        id_key="product_id",
+        summary_to_embeds=[psi[1] for psi in product_summaries],
+        combined_product_infos=[pci[1] for pci in products_combined_infos],
+        docstore=document_store,
+        vectorstore=vectorstore,
+    )
+
+    add_documents_no_split(
+        id_key="product_id",
+        summary_to_embeds=[pid[1] for pid in product_image_descriptions],
+        combined_product_infos=[pci[1] for pci in products_combined_infos],
+        docstore=document_store,
+        vectorstore=vectorstore,
+    )
 
 
 def generate_pid(
@@ -374,8 +594,8 @@ def fetch_raw_data(
             FROM products
         """
 
-        if only_products_with_reviews:
-            sql += "\nJOIN reviews ON products.data_asin = reviews.product_asin"
+        # if only_products_with_reviews:
+        #     sql += "\nJOIN reviews ON products.data_asin = reviews.product_asin"
 
         where_sql = ""
 
@@ -423,57 +643,63 @@ def fetch_raw_data(
                 map(insert_store_product, processed_products.products)
             )
         elif storage_option == StorageOption.JSON:
-            if Path(f"./{folder_name}/raw_products.json").exists():
-                os.remove(f"./{folder_name}/raw_products.json")
+            if not only_products_with_reviews:
+                if Path(f"./{folder_name}/raw_products.json").exists():
+                    os.remove(f"./{folder_name}/raw_products.json")
 
-            Path(f"./{folder_name}/raw_products.json").write_text(
-                processed_products.model_dump_json()
-            )
+                Path(f"./{folder_name}/raw_products.json").write_text(
+                    processed_products.model_dump_json()
+                )
             logger.success("Product raw data stored into raw_products.json")
         else:
             raise ValueError("Invalid Storage Option")
 
-        for product in list(processed_products.products):
-            sql = f"SELECT * FROM reviews WHERE product_asin = '{product.product_asin}'"
-            db_result = raw_db_session.execute(text(sql))
-            reviews = []
-            for row in db_result.all():
-                row_item = {"product_id": product.id, "id": uuid4()}
+        if only_products_with_reviews:
+            for product in list(processed_products.products):
+                sql = f"SELECT * FROM reviews WHERE product_asin = '{product.product_asin}'"
+                db_result = raw_db_session.execute(text(sql))
+                reviews = []
+                for row in db_result.all():
+                    row_item = {"product_id": product.id, "id": uuid4()}
 
-                for key, value in enumerate(row._fields):
-                    content = row[key]
-                    if value == "review_date":
-                        content = filter_review_date(content)
+                    for key, value in enumerate(row._fields):
+                        content = row[key]
+                        if value == "review_date":
+                            content = filter_review_date(content)
 
-                    row_item[value] = content
+                        row_item[value] = content
 
-                reviews.append(Review.model_validate(row_item, from_attributes=True))
+                    reviews.append(
+                        Review.model_validate(row_item, from_attributes=True)
+                    )
 
-            product_reviews = ReviewList.model_validate({"reviews": reviews})
-            product_json = {
-                **product.model_dump(mode="json"),
-                **product_reviews.model_dump(mode="json"),
-            }
-            products_with_reviews.append(product_json)
+                product_reviews = ReviewList.model_validate({"reviews": reviews})
+                product_json = {
+                    **product.model_dump(mode="json"),
+                    **product_reviews.model_dump(mode="json"),
+                }
+                products_with_reviews.append(product_json)
 
-            logger.success(
-                f"Product: {product.id} - Reviews: {len(product_reviews.reviews)}"
-            )
-            if storage_option == StorageOption.DATABASE:
-                db_reviews_result = list(
-                    map(insert_store_review, product_reviews.reviews)
+                logger.success(
+                    f"Product: {product.id} - Reviews: {len(product_reviews.reviews)}"
                 )
-                raw_db_session.close()
-                logger.success("Product raw data stored into the store's database")
-            elif storage_option == StorageOption.JSON:
-                if Path(f"./{folder_name}//raw_products.json").exists():
-                    os.remove(f"./{folder_name}//raw_products.json")
-                Path(f"./{folder_name}//raw_products.json").write_text(
-                    json.dumps(products_with_reviews)
-                )
-                logger.success("Product raw data stored into raw_products.json")
-            else:
-                raise ValueError("Invalid Storage Option")
+                if storage_option == StorageOption.DATABASE:
+                    db_reviews_result = list(
+                        map(insert_store_review, product_reviews.reviews)
+                    )
+                    raw_db_session.close()
+                    logger.success("Product raw data stored into the store's database")
+                elif storage_option == StorageOption.JSON:
+                    if Path(f"./{folder_name}//raw_products.json").exists():
+                        os.remove(f"./{folder_name}//raw_products.json")
+                    Path(f"./{folder_name}//raw_products.json").write_text(
+                        json.dumps(products_with_reviews)
+                    )
+                    logger.success(
+                        "Product with reviews raw data stored into raw_products.json"
+                    )
+                else:
+                    raise ValueError("Invalid Storage Option")
 
 
 # product = processed_products.products[1]

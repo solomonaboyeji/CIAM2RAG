@@ -8,6 +8,11 @@ from typing_extensions import Annotated
 from src.utils import filter_helpful_vote, filter_review_location, filter_review_rating
 
 
+class EmbeddingModel(enum.StrEnum):
+    ADA_002 = "text-embedding-ada-002"
+    NOMIC = "nomic-embed-text"
+
+
 class TextLLM(enum.StrEnum):
     GPT_4O = "gpt-4o"
     LLAMA_3_1 = "llama3.1"
