@@ -12,3 +12,4 @@ langchain-chroma
 langchain-experimental # (newest versions required for multi-modal)
 langchain_openai
 langchain_community
+ragas
