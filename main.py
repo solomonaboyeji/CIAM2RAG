@@ -7,6 +7,7 @@ from numpy import vectorize
 import typer
 from src.helper import (
     fetch_raw_data,
+    generate_analysis_data,
     generate_embeddings,
     generate_pci,
     generate_pid,
@@ -24,6 +25,40 @@ from src.schemas import (
 from src.utils import StorageOption
 
 app = typer.Typer()
+
+
+@app.command()
+def analysis_dataset(
+    pid_input_path: str = typer.Option(help="pid.json file"),
+    psi_input_path: str = typer.Option(help="psi.json file"),
+    raw_data_input_path: str = typer.Option(help="File to the JSON of the raw data."),
+    analysis_output_path: str = typer.Option(
+        help="Folder to store the output json file"
+    ),
+    name: str = typer.Option(help="Name for the output file"),
+    llm: TextLLM = typer.Option(TextLLM.LLAMA_3_1_INSTRUCT, help="The LLM to use."),
+    number_of_products: int = typer.Option(
+        help="Number of products to generate analysis for, -1 indicate all."
+    ),
+):
+    """
+    Generate Analysis Data for each product found the `analysis.json` file.
+    """
+
+    typer.echo(f"Generating multi vector data with {llm}.")
+    try:
+        generate_analysis_data(
+            pid_file_path_str=pid_input_path,
+            psi_file_path_str=psi_input_path,
+            raw_data_file_path_str=raw_data_input_path,
+            analysis_output_path=analysis_output_path,
+            llm_choice=llm,
+            number_of_products=number_of_products,
+            name=name,
+        )
+        typer.echo(f"Analysis Data Generated successfully with {llm}")
+    finally:
+        wait_for_all_tracers()
 
 
 @app.command()

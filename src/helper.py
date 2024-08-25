@@ -1,13 +1,12 @@
 import json
 import os
 from pathlib import Path
-import pprint
 import re
-import time
-from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Dict, Iterator, List, Optional, Sequence, Tuple, Union
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
+import typer
 from src.product_chains.product_combined_info import (
     ProductCombinedInformation,
     describe_image,
@@ -48,7 +47,6 @@ from loguru import logger
 from src.utils import StorageOption, filter_review_date
 from langchain_core.vectorstores import VectorStore
 
-from langchain_openai import ChatOpenAI
 from langchain.storage.exceptions import InvalidKeyException
 
 store_db_session = SessionLocal()
@@ -56,6 +54,242 @@ store_db_session = SessionLocal()
 MAXIMUM_GPT_ITERATIONS = 20
 
 from langchain_core.stores import BaseStore
+
+from langchain.prompts.chat import ChatPromptTemplate
+from langchain_core.exceptions import OutputParserException
+from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
+from pydantic import BaseModel, Field, ValidationError
+from datasets import Dataset
+from langchain_community.chat_models import ChatOllama
+
+
+class ProductAnalysisItem(BaseModel):
+    name: str = Field(description="Name of the product")
+    product_asin: str = Field(description="Identification number")
+    total_customers_that_rated: str = Field(
+        description="The number of people that rater this product"
+    )
+    overall_ratings: str = Field(description="The ratings for this product")
+    brand: str = Field(description="The brand name for this item")
+    available_written_reviews: str = Field(
+        description="The number of people that wrote review for this ietm"
+    )
+    weather: str = Field(description="Best weather this item can be used in.")
+    usage: str = Field("In what situation can this item be used for")
+    type: str = Field(
+        description="What is the best category this item can be placed in"
+    )
+    material: str = Field(description="What is the product made of?")
+    color: str = Field(description="What is the colour of the product?")
+    target_audience: str = Field(
+        description="Who is the best audience this item is targetted to"
+    )
+    price: str = Field(description="The price tag for this product.")
+    currency: str = Field(description="The currency for the product's price")
+    ciam_category: str = Field(description="The CIAM category for this item")
+
+
+def generate_analysis_data(
+    raw_data_file_path_str: str,
+    psi_file_path_str: str,
+    pid_file_path_str: str,
+    analysis_output_path: str,
+    llm_choice: TextLLM = TextLLM.LLAMA_3_1_INSTRUCT,
+    number_of_products: int = -1,
+    name: str = "analysis",
+):
+    raw_data_file_path = Path(raw_data_file_path_str)
+    psi_file_path = Path(psi_file_path_str)
+    pid_file_path = Path(pid_file_path_str)
+
+    assert raw_data_file_path.exists()
+    assert pid_file_path.exists()
+    assert psi_file_path.exists()
+
+    output_file_path = Path(analysis_output_path + f"/{name}-{llm_choice.lower()}.json")
+
+    product_summaries = json.loads(psi_file_path.read_text())
+    product_image_descriptions = json.loads(pid_file_path.read_text())
+    raw_products = json.loads(raw_data_file_path.read_bytes())
+
+    products_combined_infos = {}
+    for rp in raw_products:
+        if rp["product_asin"] in product_summaries:
+            products_combined_infos[rp["product_asin"]] = ProductCombinedInformation(
+                product=RAWProduct.model_validate(rp)
+            )
+
+    # Everything must be in equal
+    # TODO: Check that same item is in the exact position in all dict
+    assert (
+        len(product_image_descriptions)
+        == len(product_summaries)
+        == len(products_combined_infos)
+    )
+
+    product_image_descriptions = sorted(
+        product_image_descriptions.items(), key=lambda x: x[0]
+    )
+    product_summaries = sorted(product_summaries.items(), key=lambda x: x[0])
+    products_combined_infos = sorted(
+        products_combined_infos.items(), key=lambda x: x[0]
+    )
+
+    actual_number_of_products = number_of_products
+    if number_of_products != -1:
+        logger.info(f"Clipping number of products to {number_of_products}")
+        products_combined_infos = products_combined_infos[0:number_of_products]
+        product_summaries = product_summaries[0:number_of_products]
+        product_image_descriptions = product_image_descriptions[0:number_of_products]
+    else:
+        actual_number_of_products = len(product_summaries)
+        number_of_products = len(product_summaries)
+        logger.info(f"Generating analysis data for {actual_number_of_products} data.")
+
+    if number_of_products < -1:
+        logger.error("Invalid number of products to process, please use >= -1")
+        raise typer.Exit()
+
+    if llm_choice == TextLLM.GPT_4O and (
+        number_of_products > 2 or number_of_products == -1
+    ):
+        logger.error("Nah!!!! Too costly")
+        raise typer.Exit(1)
+
+    # Load these data into Document
+    ## Product Info Documents
+    product_info_docs = [
+        Document(
+            page_content=product_info.info(),
+            metadata={
+                "id": product_info.product.id,
+                "name": product_info.product.name,
+                "product_asin": product_info.product.product_asin,
+            },
+        )
+        for product_asin, product_info in products_combined_infos
+    ]
+    # summary_docs = [
+    #     Document(
+    #         page_content=summary_text,
+    #         metadata={
+    #             "product_asin": product_asin,
+    #         },
+    #     )
+    #     for product_asin, summary_text in product_summaries
+    # ]
+    # image_descriptions_docs = [
+    #     Document(
+    #         page_content=description_text,
+    #         metadata={
+    #             "product_asin": product_asin,
+    #         },
+    #     )
+    #     for product_asin, description_text in product_image_descriptions
+    # ]
+
+    questions = {
+        "brand": "What is the brand or maker of this product? Return back only the name of the brand/maker. If you do not know it, return back UNKNOWN.",
+        "weather": "Which of this best suit the condition this product can be used in Summer, Winter, Spring, autumn. If all return back 'Transitional' to indicate it could be used in between summer and winter. If multiple seperate them with a forward slash '/'",
+        "usage": "Is this item best for Casual, Sport, Athleisure, Format, or Outdoor. If the answer is not in here, list out the most appropriate answer. If multiple, seperate them with a '/' no space.",
+        "type": "What is the common name for this item? Return only one word, pluralised.",
+        "material": "What material is used to make this product.Return back only the name of the material and If you can't find the answer return back UNKNOWN.",
+        "color": "What is the primary colour of this product? Check the image description before you check the product details. If you can't find the answer return back UNKNOWN. If multiple separate them with a '/",
+        "target_audience": "Who are the target aduience for this item Kids, Teens, Adults, Any, Kids and Teens, Kids and Adults or Teens and Adults?",
+    }
+
+    prompt = """Answer the following questions about this product and return back your answers with the questions' key while replacing the value with your answer for each question.
+
+    Questions:
+    {questions}
+
+    Product Details:
+    {product_details}
+
+    Product Image Description:
+    {image_description}
+
+    Only respond with a correct JSON, no comment no explanation. The output must be a well formatted JSON output.
+    Follow this pattern:
+    {{
+        "brand": "",
+        "weather": "",
+        "usage": "",
+        "type": "",
+        "material": "",
+        "color": "",
+        "target_audience": ""
+    }}
+    """
+
+    model_name = TextLLM.LLAMA_3_1_INSTRUCT
+    model = ChatOllama(model=model_name)
+    chain_prompt = ChatPromptTemplate.from_template(prompt)
+
+    output = {}
+    analysis_items = []
+    max_retries = 5
+
+    for index, product_doc in enumerate(product_info_docs[0:actual_number_of_products]):
+        # reset
+        try_times = 1
+
+        product_combo_instance = products_combined_infos[index][1].product
+        logger.success(
+            f"{index + 1}/{actual_number_of_products} -> {product_combo_instance.product_asin}\n"
+        )
+
+        if output_file_path.exists():
+            analysis_bag = json.loads(output_file_path.read_text())
+            assert isinstance(analysis_bag, dict)
+        else:
+            analysis_bag = {}
+
+        if product_combo_instance.product_asin not in analysis_bag:
+            while try_times < max_retries:
+                try:
+                    image_description = product_image_descriptions[index]
+                    chain = chain_prompt | model | JsonOutputParser()
+                    output = chain.invoke(
+                        {
+                            "questions": questions,
+                            "product_details": product_doc.page_content,
+                            "image_description": image_description,
+                        }
+                    )
+
+                    output["price"] = str(product_combo_instance.price)
+                    output["product_asin"] = product_combo_instance.product_asin
+                    output["name"] = product_combo_instance.name
+                    output["overall_ratings"] = str(
+                        product_combo_instance.overall_ratings
+                    )
+                    output["available_written_reviews"] = str(
+                        len(product_combo_instance.reviews)
+                    )
+                    output["total_customers_that_rated"] = str(
+                        product_combo_instance.total_customers_that_rated
+                    )
+                    output["currency"] = product_combo_instance.currency
+                    output["ciam_category"] = product_combo_instance.category
+                    _analysis_item = ProductAnalysisItem.model_validate(output)
+                    analysis_items.append(_analysis_item.model_dump())
+
+                    analysis_bag[product_combo_instance.product_asin] = (
+                        _analysis_item.model_dump()
+                    )
+                    output_file_path.write_text(json.dumps(analysis_bag))
+                    break
+                except (ValidationError, OutputParserException) as e:
+                    try_times += 1
+
+                    if try_times == max_retries:
+                        logger.error(
+                            f"\n\nSkipping after {max_retries} retries. {product_combo_instance.product_asin} due to ane error {e}\n"
+                        )
+                        break
+
+        index += 1
 
 
 class CIAMDocumentFileStore(BaseStore[str, Document]):
@@ -279,21 +513,6 @@ def add_documents_no_split(
     docstore.mset(list(zip(product_ids, parent_docs_contents)))
 
 
-# if product_combined_info_summaries:
-#     add_documents_no_split(
-#         retriever=retriever,
-#         summary_to_embeds=product_combined_info_summaries,
-#         combined_product_infos=product_combined_infos
-#     )
-
-# if product_image_descriptions:
-#     add_documents_no_split(
-#         retriever=retriever,
-#         summary_to_embeds=product_image_descriptions,
-#         combined_product_infos=product_combined_infos
-#     )
-
-
 def generate_embeddings(
     raw_data_file_path_str: str,
     psi_file_path_str: str,
@@ -335,7 +554,7 @@ def generate_embeddings(
     products_combined_infos = sorted(
         products_combined_infos.items(), key=lambda x: x[0]
     )
-    
+
     text_embedding_model_name = "nomic-embed-text"
     underlying_embedding = OpenAIEmbeddings()
 
@@ -822,21 +1041,3 @@ def fetch_raw_data(
                     )
                 else:
                     raise ValueError("Invalid Storage Option")
-
-
-# product = processed_products.products[1]
-# prompt_template = f"""
-#     You are an expert in writing descriptions for product in a store. You are given the title of a product and a rough information about the product.
-#     Your task is to use this information to write a concise description. You should not use any content outside the information provided.
-#     Only return back an answer in the pattern provided below: Include product details, and other meta data about the product.
-
-#     Product Title: {product.name}
-#     Product Information: {product.description}
-
-#     Generate an answer in this format
-
-#     {{
-#         "description": ""
-#     }}
-
-# """

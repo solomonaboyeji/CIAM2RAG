@@ -42,3 +42,10 @@ Generate Product Summary Information
 
 
 ```
+
+Generate Analysis Data
+
+```sh
+ % python -m main analysis-dataset --pid-input-path V1_DATA/pid-llava:13b-v1.6-vicuna-q4_0.json --psi-input-path V1_DATA/psi-llama3.1:8b-instruct-q5_k_m.json --raw-data-input-path V1_DATA/raw_products.json --analysis-output-path V1_DATA --llm llama3.1:8b-instruct-q5_K_M --number-of-products 5
+
+```
